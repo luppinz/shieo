@@ -8,11 +8,17 @@ import uuid
 import re
 from datetime import datetime
 from urllib.parse import urlencode
-import telegram
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram import Update
-import asyncio
 import threading
+
+# Import khusus untuk bot mode (opsional)
+try:
+    import telegram
+    from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram import Update
+    import asyncio
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
 
 class TMTunnelsAutoComplete:
     def __init__(self, telegram_token=None, chat_id=None):
@@ -20,13 +26,9 @@ class TMTunnelsAutoComplete:
         self.create_url = "https://tmtunnels.id/send.php"
         self.result_url = "https://tmtunnels.id/hasil.php"
         
-        # Telegram configuration
+        # Telegram configuration - hanya simpan token dan chat_id
         self.telegram_token = telegram_token
         self.chat_id = chat_id
-        self.bot = None
-        
-        if self.telegram_token:
-            self.bot = telegram.Bot(token=self.telegram_token)
         
         self.register_headers = {
             'authority': 'tmtunnels.id',
@@ -77,27 +79,29 @@ class TMTunnelsAutoComplete:
         
         self.session = requests.Session()
     
-    async def send_telegram_message(self, message):
-        """Send message to Telegram"""
-        if self.bot and self.chat_id:
+    def send_telegram_sync(self, message):
+        """Kirim pesan menggunakan HTTP request langsung"""
+        if self.telegram_token and self.chat_id:
             try:
-                await self.bot.send_message(chat_id=self.chat_id, text=message, parse_mode='HTML')
-                print("✅ Pesan Telegram berhasil dikirim!")
+                url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+                payload = {
+                    'chat_id': self.chat_id,
+                    'text': message,
+                    'parse_mode': 'HTML'
+                }
+                
+                response = requests.post(url, json=payload, timeout=10)
+                
+                if response.status_code == 200:
+                    print("✅ Pesan Telegram berhasil dikirim!")
+                else:
+                    print(f"❌ Error HTTP: {response.status_code}")
+                    print(f"Response: {response.text}")
+                        
             except Exception as e:
                 print(f"❌ Error mengirim pesan Telegram: {e}")
         else:
-            print("⚠️ Telegram bot tidak dikonfigurasi")
-    
-    def send_telegram_sync(self, message):
-        """Synchronous wrapper for sending Telegram messages"""
-        if self.bot and self.chat_id:
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.send_telegram_message(message))
-                loop.close()
-            except Exception as e:
-                print(f"❌ Error mengirim pesan Telegram: {e}")
+            print("⚠️ Telegram token atau chat_id tidak dikonfigurasi")
     
     def format_account_message(self, account_info, account_number):
         """Format account information for Telegram message"""
@@ -131,7 +135,6 @@ class TMTunnelsAutoComplete:
 👤 <b>Username:</b> <code>{account_info.get('username', 'N/A')}</code>
 🔐 <b>Password:</b> <code>{account_info.get('password', 'N/A')}</code>
 📝 <b>Error:</b> <code>{account_info.get('error', 'Unknown error')}</code>
-
 ⏰ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         
@@ -479,9 +482,12 @@ class TMTunnelsAutoComplete:
         with open('tmtunnels_summary.json', 'w') as f:
             json.dump(summary, f, indent=2)
 
-# Telegram Bot Handler Class
+# Telegram Bot Handler Class (hanya jika library tersedia)
 class TMTunnelsTelegramBot:
     def __init__(self, telegram_token):
+        if not TELEGRAM_AVAILABLE:
+            raise ImportError("python-telegram-bot tidak terinstall!")
+            
         self.telegram_token = telegram_token
         self.app = ApplicationBuilder().token(telegram_token).build()
         self.setup_handlers()
@@ -569,6 +575,7 @@ Hubungi developer jika mengalami masalah.
             
             # Run account creation in background thread
             def run_creation():
+                # Gunakan requests untuk notifikasi, bukan async bot
                 auto_complete = TMTunnelsAutoComplete(
                     telegram_token=self.telegram_token,
                     chat_id=chat_id
@@ -602,8 +609,15 @@ Contoh: <code>/create 3</code>
     
     def run_bot(self):
         """Run the Telegram bot"""
-        print("🤖 Starting Telegram Bot...")
-        self.app.run_polling()
+        try:
+            print("🤖 Starting Telegram Bot...")
+            self.app.run_polling()
+        except KeyboardInterrupt:
+            print("\n⛔ Bot dihentikan oleh user.")
+        except Exception as e:
+            print(f"❌ Bot error: {e}")
+        finally:
+            print("🔄 Bot cleanup completed.")
 
 if __name__ == "__main__":
     print("🎯 TMTunnels Auto Register, Create & Get Config with Telegram Support")
@@ -614,6 +628,11 @@ if __name__ == "__main__":
     
     if mode == "2":
         # Telegram Bot Mode
+        if not TELEGRAM_AVAILABLE:
+            print("❌ python-telegram-bot tidak terinstall!")
+            print("Install dengan: pip install python-telegram-bot")
+            exit(1)
+            
         telegram_token = input("Masukkan Telegram Bot Token: ").strip()
         if not telegram_token:
             print("❌ Token Telegram diperlukan!")
@@ -628,7 +647,7 @@ if __name__ == "__main__":
             print(f"❌ Error: {e}")
     
     else:
-        # Manual Mode
+        # Manual Mode - tidak memerlukan async
         try:
             count = int(input("Berapa akun yang ingin dibuat? "))
             delay = int(input("Delay antar request (detik)? [default: 3] ") or "3")
